@@ -1,0 +1,10 @@
+Metadata-Version: 2.4
+Name: embryo_pipe
+Version: 0.1
+Requires-Dist: numpy
+Requires-Dist: scikit-image
+Requires-Dist: cellpose
+Requires-Dist: czifile
+Requires-Dist: pandas
+Requires-Dist: seaborn
+Dynamic: requires-dist
