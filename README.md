@@ -5,7 +5,7 @@ embryo_pipe is a specialized image analysis pipeline designed to automate the tr
 To get up and running, follow these steps to set up your environment and install the package in editable mode.
 
 ### 1. Create the Conda Environment
-Use the provided `.yml` file to install all necessary dependencies, including cellpose, scikit-image, and czifile.
+Use the provided `.yml` file to install all necessary dependencies, including the correct versions of cellpose v3.0 (Later version of cellpose won't work with this pipeline), scikit-image, and czifile.
 ```bash
 conda env create -f imageanalysisEnv.yml
 conda activate imageanalysis
