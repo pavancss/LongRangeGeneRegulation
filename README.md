@@ -21,7 +21,7 @@ pip install -e .
 ## Usage
 The best way to explore the pipeline is via the provided `Test.ipynb` notebook. This notebook demonstrates the end-to-end workflow, from loading raw data to generating final intensity plots.
 
-## The Core Pipeline: `process_embryo`
+### The Core Pipeline: `process_embryo`
 The `process_embryo` function automates the full analysis for a single embryo dataset. It integrates several modules from the package to transform raw microscopy stacks into quantified metrics.
 
 ### Pipeline Stages
