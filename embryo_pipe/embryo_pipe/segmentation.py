@@ -1,28 +1,46 @@
+import os
 import numpy as np
 from cellpose import models
 from skimage.measure import label
 from skimage.filters import threshold_otsu, gaussian
-from skimage.morphology import dilation, remove_small_objects
+from skimage.morphology import remove_small_objects
 from skimage.segmentation import relabel_sequential
 
 
+here = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_MODEL_DIR = os.path.join(here, 'cellpose_models')
+
+
 def nonzeroavg(img):
-    """Calculates the average of non-zero pixels."""
+    """
+    Mean of the non-zero pixels of an array.
+
+    Used for background estimation on masked images, where pixels outside the
+    mask are 0. Returns NaN (with a RuntimeWarning) if every pixel is 0.
+    """
     return np.mean(img[np.nonzero(img)])
 
 
 def pp7_segmentation(R_analyze, tracked_nucs_filter, div_thresh):
     """
-    Segments PP7 transcription foci based on a signal-to-noise ratio threshold.
-    
+    Segment PP7 transcription foci frame by frame with a signal-to-noise threshold.
+
+    For each frame, an Otsu threshold separates nuclear signal from background;
+    each pixel is divided by the mean nuclear intensity, and pixels above
+    ``div_thresh`` that fall inside a tracked nucleus are called foci.
+
     Args:
-        R_analyze (np.array): 3D stack (T, Y, X) of the Red/PP7 channel.
-        tracked_nucs_filter (np.array): Mask of tracked nuclei. Needs to only be binary
-        div_thresh (float): Intensity ratio threshold for foci detection.
-        
+        R_analyze (np.ndarray): (T, Y, X) stack of the PP7 channel (max projection).
+        tracked_nucs_filter (np.ndarray): (T, Y, X) nuclear masks. Any value > 0
+            counts as nucleus, so a labeled or binary stack both work.
+        div_thresh (float): Pixel / mean-nuclear-intensity ratio above which a
+            pixel is called a focus.
+
     Returns:
-        R_foci mask- Labeled mask of PP7 foci inside nuclei 
-        R_foci_int- Backround subtracted intensity image time course of all PP7 foci. 
+        R_foci (np.ndarray): (T, Y, X) labeled focus mask (labels restart in
+            every frame).
+        R_foci_int (np.ndarray): (T, Y, X) focus intensities after subtracting
+            the mean non-focus nuclear intensity of that frame; 0 outside foci.
     """
     R_foci = np.zeros(R_analyze.shape)
     R_foci_int = np.zeros(R_analyze.shape)
@@ -38,7 +56,7 @@ def pp7_segmentation(R_analyze, tracked_nucs_filter, div_thresh):
         
         # Calculate ratio and mask foci within tracked nuclei
         R_div = im / (cell_mask * np.mean(cells[cells > 0]))
-        R_div[R_div == np.nan] = 0
+        R_div[np.isnan(R_div)] = 0
         foci_mask = (R_div > div_thresh) * (tracked_nucs_filter[timectr, :, :] > 0)
         
         foci_label = label(foci_mask)
@@ -53,62 +71,65 @@ def pp7_segmentation(R_analyze, tracked_nucs_filter, div_thresh):
     return R_foci, R_foci_int
 
 
-def ms2_segmentation(G_analyze, tracked_nucs_filter, div_thresh,min_size=2):
+def ms2_segmentation(G_analyze, tracked_nucs_filter, div_thresh=1.25,min_size=2):
     """
-    Segments MS2 transcription foci based on a signal-to-noise ratio threshold.
-    
+    Segment MS2 transcription foci with a signal-to-noise threshold.
+
+    The whole stack is smoothed (Gaussian, sigma=1), divided by the mean smoothed
+    intensity inside nuclei (one value for the whole movie), thresholded at
+    ``div_thresh``, and objects smaller than ``min_size`` are removed.
+
     Args:
-        G_analyze (np.array): 3D stack (T, Y, X) of the Green/MS2 channel.
-        tracked_nucs_filter (np.array): Mask of tracked nuclei. Needs to only be binary
-        div_thresh (float): Intensity ratio threshold for foci detection.
-        min_size (integer) - Minimum MS2 focus size (in pixels)
-        
+        G_analyze (np.ndarray): (T, Y, X) stack of the MS2 channel (max projection).
+        tracked_nucs_filter (np.ndarray): (T, Y, X) nuclear masks. Any value > 0
+            counts as nucleus.
+        div_thresh (float): Smoothed-intensity / mean-nuclear-intensity ratio
+            above which a pixel is called a focus.
+        min_size (int): Minimum focus size in pixels. Note that
+            ``remove_small_objects`` sees the full (T, Y, X) stack, so
+            connectivity is 3D (a focus can connect across adjacent frames).
+
     Returns:
-        G_foci mask- Labeled mask of PP7 foci inside nuclei 
-        G_foci_int- Backround subtracted intensity image time course of all PP7 foci. 
+        G_foci (np.ndarray): (T, Y, X) boolean focus mask (not labeled).
+        G_foci_int (np.ndarray): (T, Y, X) raw intensity minus the movie-wide
+            mean nuclear background, 0 outside foci.
     """
     G_foci = np.zeros(G_analyze.shape)
     G_foci_int = np.zeros(G_analyze.shape)
 
-    for timectr in range(G_analyze.shape[0]):
-        im = G_analyze[timectr, :, :].astype('float')
-        threshs = threshold_otsu(im)
-        foci_mask = im > threshs
-        
-        bg = np.mean(im[~foci_mask])
-        foci = im * foci_mask
-        foci[foci == 0] = np.nan
-        
-        G_div = foci / bg
-        foci_mask_clear = (G_div > div_thresh) * (tracked_nucs_filter[timectr, :, :] > 0)
-        
-        foci_label = label(foci_mask_clear)
-        foci_label = remove_small_objects(foci_label, min_size=2)
-        foci_label_filt, fw, rv = relabel_sequential(foci_label)
-        
-        G_foci[timectr, :, :] = foci_label_filt
-        
-        # Background subtraction
-        bgmask = ~foci_mask_clear
-        bgval = nonzeroavg(bgmask * G_analyze[timectr, :, :])
-        int_image = (G_analyze[timectr, :, :] - np.full(bgmask.shape, fill_value=bgval)) * foci_mask_clear
-       
-        G_foci_int[timectr, :, :] = int_image
+    im = G_analyze.astype('float')
+    im_smooth = gaussian(im, sigma=1)
+    nucs=tracked_nucs_filter>0
+
+    bg = np.mean(im_smooth[nucs])
+    emb = im_smooth * nucs
+
+    G_div = emb / bg
+    #g_bin=G_div > threshold_multiotsu(G_div[np.nonzero(G_div)], classes=4)[2]
+    g_bin=G_div > div_thresh
+    #g_bin_erode=isotropic_opening(g_bin,radius=1)
+    G_foci=remove_small_objects(g_bin,min_size=min_size)
+    G_foci_int = (G_analyze - np.full(G_analyze.shape, fill_value=bg)) * G_foci
 
     return G_foci, G_foci_int
 
 
 def nuc_overlap(singlenucmask, allnucmask, overlap_frac=0.9):
     """
-    Function to find out nucleus label in next time frame of movie using overlap_frac cutoff
+    Find which labeled nucleus in another frame matches a single nucleus.
+
+    The label with the most overlapping pixels is chosen; it is accepted only if
+    the overlap exceeds ``overlap_frac`` of that candidate's area.
 
     Inputs
-    singlenucmask- Single nuclear binary mask in frame T. 2D numpy array. 
-    allnucmask- Labeled nuclear mask of frame T+1 in which to find nucleus from singlenucmask. 2D numpy array 
-    overlap_frac- Optional. Nucleus is counted as same if there is at least 90% overlap. 
+    singlenucmask- 2D binary mask of one nucleus.
+    allnucmask- 2D labeled nuclear mask of the frame to search in
+        (``nuclei_track`` passes the PREVIOUS, already-tracked frame).
+    overlap_frac- Optional, default 0.9. Minimum overlap as a fraction of the
+        candidate nucleus area.
 
     Output
-    Label of nucleus in frame T+1. If no nucleus shows >overlap_frac overlap, then -1. 
+    Matching label in ``allnucmask``, or -1 if none passes the cutoff.
 
     """
     overlap = (singlenucmask > 0) * allnucmask
@@ -127,27 +148,40 @@ def nuc_overlap(singlenucmask, allnucmask, overlap_frac=0.9):
             return -1
         
 
-def nuclei_track(R_analyze, overlap_frac=0.5, cellposemodel='nuclei'):
+def nuclei_track(R_analyze, overlap_frac=0.5, cellposemodel='nuclei', model_dir=DEFAULT_MODEL_DIR):
     """
-    Function to segment and track nuclei 
+    Segment nuclei in every frame with Cellpose and link them over time.
+
+    Bright pixels (> 10000, i.e. transcription foci) are replaced by the stack
+    mean before segmentation. Each frame is smoothed (sigma=1.5) and segmented
+    (diameter=30); objects < 100 px are removed. Nuclei are then linked
+    frame-to-frame with ``nuc_overlap``; unmatched nuclei get a new label.
 
     Inputs
-    R_analyze- T x X x Y stack where the nuclei are tracked in time axis T.
-    overlap_frac- Optional. Minimum overlap between nuclei in successive frames. 
-    cellposemodel- This uses models in cellpose v3.1.0. Change the base path (Does not work well with standard cellpose v4 models)
+    R_analyze- (T, Y, X) stack used for nuclear segmentation (PP7 channel
+        nuclear background).
+    overlap_frac- Optional, default 0.5. Minimum overlap used to link nuclei in
+        successive frames (see ``nuc_overlap``).
+    cellposemodel- 'nuclei' (-> nucleitorch_0), 'cp' (-> CP) or the file name
+        of another model in ``model_dir``. Written for cellpose v3.1.0; does not
+        work well with standard cellpose v4 models.
+    model_dir- Folder containing the Cellpose models.
 
-    Outputs
+    Outputs (in this order)
+    nuc_masks_filter- (T, Y, X) per-frame labels (not linked over time).
+    nuc_counts- List with the number of nuclei segmented in each frame, useful
+        for checking segmentation quality.
+    nucs_commonlabels- (T, Y, X) labels linked over time (same nucleus keeps
+        the same label).
 
-    nucs_commonlabels- Nuclear label image T x X x Y where the nuclei are tracked over time with same label
-    nuc_counts - List of number of nuclei in each frame. Useful to track for segmentation quality.
-    nuc_masks_filter - Labeled nuclear masks where each frame is segmented and labeled individually
-
+    Note: when linking, labels are iterated as ``range(1, max_label)`` so the
+    highest-numbered nucleus in each frame (after frame 0) is not carried over.
 
     """
     channels = [[0, 0]]
     
     # Model Selection
-    base_path = 'cellpose_models/'
+    base_path = os.path.join(model_dir, '')
     if cellposemodel == 'nuclei':
         model_path = base_path + 'nucleitorch_0'
     elif cellposemodel == 'cp':
@@ -174,6 +208,7 @@ def nuclei_track(R_analyze, overlap_frac=0.5, cellposemodel='nuclei'):
     for ctr in range(nuc_masks_nt.shape[0]):
         filt = remove_small_objects(np.uint32(nuc_masks_nt[ctr, :, :]), min_size=100)
         nuc_masks_filter[ctr, :, :], fw, rv = relabel_sequential(filt)
+        nuc_counts.append(int(np.max(nuc_masks_filter[ctr, :, :])))
 
     # Sequential Tracking
     nucs_commonlabels = np.zeros(nuc_masks_filter.shape)
@@ -199,16 +234,22 @@ def nuclei_track(R_analyze, overlap_frac=0.5, cellposemodel='nuclei'):
 def nucs_border_time_filter(tracked_nucs,surv_thresh=5):
 
     """
-    Function to filter the nuclei for overlap with the border and for nuclei that exist in frame for a short time
+    Remove tracked nuclei that touch the image border or are present only briefly.
+
+    A nucleus is removed if it overlaps the image edge in ANY frame (the edge band
+    is 1 px at the top/left and 2 px at the bottom/right), or if it is present
+    in ``surv_thresh`` frames or fewer. Kept nuclei are relabeled 1..N.
 
     Inputs
-    tracked nucs- Nuclear label image T x X x Y where the nuclei are tracked over time with same label
-    surv_thresh- In pixels, the width of the border band. If nuclei overlap this band, they are removed. 
+    tracked_nucs- (T, Y, X) labels linked over time (``nuclei_track`` output).
+        Modified in place: border-touching nuclei are set to 0.
+    surv_thresh- Minimum number of frames, exclusive (nucleus must be present
+        in more than ``surv_thresh`` frames to be kept). Default 5.
 
     Outputs
-
-    nuc_survival- List of number of frames each label in tracked_nucs_filter survives in the whole movie.
-    tracked_nucs_filter- Filtered nuclear label image T x X x Y where the nuclei are tracked over time with same label
+    nuc_survival- Dict: original label -> number of frames present, for all
+        non-border nuclei (including ones removed for short survival).
+    tracked_nucs_filter- (T, Y, X) uint32 filtered and relabeled stack.
 
     """
 

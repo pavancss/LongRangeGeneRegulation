@@ -4,24 +4,34 @@ import czifile
 import re
 from skimage.io import imread
 
-def import_image_czi(imagefolder, ms2_channel=2, pp7_channel=1, imageorder=[]):
+def import_image_czi(imagefolder, ms2_channel=2, pp7_channel=1, imageorder=None):
+    """
+    Load and concatenate all movies of one embryo and max-project two channels.
 
-    ''' 
-    This function takes an imagefolder with a bunch of czi (Zeiss) timecourse movies from a single embryo and concatenates then and returns the maximum intensity
-    projections of the concatenated image in the specified channels. 
+    Every .czi (Zeiss) or .tif file in ``imagefolder`` is read, the files are
+    concatenated along time, and the maximum intensity projection along Z is
+    returned for the MS2 and PP7 channels.
 
-    Inputs- 
-    imagefolder-> Imagefolder with images from a single embryo.
-    ms2_channel-> Channel index (for numpy array. base 0) for MS2 channel 
-    pp7_channel-> Channel index (for numpy array. base 0) for PP7 channel 
-    imageorder-> Optional input. Default assumption is to use numerical order of images as timeorder. In case this is not true, can specify imageorder. 
+    Inputs
+    imagefolder- Folder holding the movies of a single embryo (hidden files
+        starting with '.' are ignored).
+    ms2_channel- Channel index (0-based) of the MS2 channel. Default 2.
+    pp7_channel- Channel index (0-based) of the PP7 channel. Default 1.
+    imageorder- Optional list of file names giving the time order. By default
+        files are sorted by the first number in their name (e.g. emb_1.czi,
+        emb_2.czi, emb_10.czi), so every file name must contain a number.
 
-    Outputs-
-    G_max-> Maximum intensity projection of MS2 channel.
-    R_max-> Maximum intensity projection of PP7 channel. 
+    Outputs
+    G_max- (T, Y, X) max projection of the MS2 channel.
+    R_max- (T, Y, X) max projection of the PP7 channel.
 
-    
-    '''
+    Notes
+    - After squeezing, .czi files are expected as (C, T, Z, Y, X); .tif files
+      are expected with channels on axis 4 (moved to axis 0). A file with a
+      single time point (4D after squeezing) gets a time axis added.
+    - The returned stacks start at the first frame of the first file, so
+      ``frame_start`` / ``frame_stop`` in the notebook index from there.
+    """
 
     files = os.listdir(imagefolder)
     czi_files = [f for f in files if (f.endswith('.czi') or f.endswith('.tif')) and not f.startswith('.')]
